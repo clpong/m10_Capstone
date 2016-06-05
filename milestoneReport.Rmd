@@ -1,0 +1,178 @@
+---
+title: "Coursera Data Science Capstone Milestone Report"
+author: "clpong"
+date: "Saturday June 5, 2016"
+output: 
+  html_document:
+    toc: true
+---
+
+##Introduction
+
+This milestone report is based on exploratory data analysis of the SwifKey data provided in the context of the Coursera Data Science Capstone. The data consist of 3 text files containing text from three different sources (blogs, news & twitter). Some of the code is hidden to preserve space, but can be accessed by looking at the Raw .Rmd (milestoneReport.Rmd), which can be found in my GitHub repository https://github.com/clpong/m10_Capstone
+
+
+##Data Summary
+
+The data is acquired from https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip.
+
+**Packages, Libraries, Seed**
+
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+
+setwd("c:/m10_Capstone")
+library(dplyr)
+library(doParallel)
+library(stringi)
+library(tm)
+library(slam)
+library(ggplot2)
+library(wordcloud)
+```
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+# Setup parallel clusters to accelarate execution time
+jobcluster <- makeCluster(detectCores())
+invisible(clusterEvalQ(jobcluster, library(tm)))
+invisible(clusterEvalQ(jobcluster, library(slam)))
+invisible(clusterEvalQ(jobcluster, library(stringi)))
+invisible(clusterEvalQ(jobcluster, library(wordcloud)))
+```
+
+**Downloading Raw Data**
+
+```{r, warning=FALSE, message=TRUE, cache=TRUE}
+# Check for zip file and download if necessary
+if (!file.exists("Coursera-SwiftKey.zip")) {
+    download.file("https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip", 
+        destfile = "Coursera-SwiftKey.zip")
+}
+# Check for data file and unzip if necessary
+if (!file.exists("final/en_US/en_US.blogs.txt")) {
+    unzip("Coursera-SwiftKey.zip", exdir = ".")
+}
+```
+##Analysing Data
+
+Basis data analysis done for line of records, character and word count, word per line and this iwll be displayed in the below histogram to identified distribution of the 3 sets of data.
+
+**Loading 3 set of Data**
+```{r, warning=FALSE, message=TRUE, cache=TRUE}
+conn <- file("final/en_US/en_US.blogs.txt", open = "rb")
+blogs_dt <- readLines(conn, encoding = "UTF-8")
+close(conn)
+
+# Read news data in binary mode
+conn <- file("final/en_US/en_US.news.txt", open = "rb")
+news_dt <- readLines(conn, encoding = "UTF-8")
+close(conn)
+
+# Read twitter data in binary mode
+conn <- file("final/en_US/en_US.twitter.txt", open = "rb")
+twits_dt <- readLines(conn, encoding = "UTF-8")
+```
+
+**Mean Calculation for 3 sets of Data**
+```{r, warning=FALSE, message=TRUE, cache=TRUE}
+# Compute words per line info on each line for each data type
+rawWPL<-lapply(list(blogs_dt,news_dt,twits_dt),function(x) stri_count_words(x))
+
+# Compute statistics and summary info for each data type
+rawstats<-data.frame(
+            File=c("blogs","news","twitter"), 
+            t(rbind(sapply(list(blogs_dt,news_dt,twits_dt),stri_stats_general),
+                    TotalWords=sapply(list(blogs_dt,news_dt,twits_dt),stri_stats_latex)[4,])),
+            # Compute words per line summary
+            WPL=rbind(summary(rawWPL[[1]]),summary(rawWPL[[2]]),summary(rawWPL[[3]]))
+            )
+print(rawstats)
+```
+From the statistics, we can see that, mean darta for Blogs, News and Twitter are respectively 41.7. 34.4 and 12.7 repectively.
+
+**Plots Histogram for 3 sets of Data**
+```{r, warning=FALSE, message=TRUE, cache=TRUE}
+qplot(rawWPL[[1]],geom="histogram",main="Histogram for Blogs Data",
+      xlab="No. of Words",ylab="Frequency",binwidth=10)
+```
+```{r, warning=FALSE, message=TRUE, cache=TRUE}
+qplot(rawWPL[[2]],geom="histogram",main="Histogram for News Data",
+      xlab="No. of Words",ylab="Frequency",binwidth=10)
+```
+```{r, warning=FALSE, message=TRUE, cache=TRUE}
+qplot(rawWPL[[3]],geom="histogram",main="Histogram for Twitter Data",
+      xlab="No. of Words",ylab="Frequency",binwidth=1)
+```
+```{r, warning=FALSE, message=TRUE, cache=TRUE}
+rm(rawWPL);rm(rawstats)
+```
+From the histograms plotted, we also notice that all data types are right-skewed.
+
+##Sampling Data
+We set sample data size = 10000 lines of data before data cleaning for exploratory analysis.
+
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+samplesize <- 10000  # Assign sample size
+set.seed(1000)  # Ensure reproducibility 
+
+# Create raw data and sample vectors
+data <- list(blogs_dt, news_dt, twits_dt)
+sample <- list()
+
+# Iterate each raw data to create 'cleaned'' sample for each
+for (i in 1:length(data)) {
+    # Create sample dataset
+    Filter <- sample(1:length(data[[i]]), samplesize, replace = FALSE)
+    sample[[i]] <- data[[i]][Filter]
+    # Remove unconvention/funny characters
+    for (j in 1:length(sample[[i]])) {
+        row1 <- sample[[i]][j]
+        row2 <- iconv(row1, "latin1", "ASCII", sub = "")
+        sample[[i]][j] <- row2
+    }
+}
+
+rm(blogs_dt)
+rm(news_dt)
+rm(twits_dt)
+```
+
+##Creating corpus & Cleaning data
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+# Create corpus and document term matrix vectors
+corpus <- list()
+dtMatrix <- list()
+
+# Iterate each sample data to create corpus and DTM for each
+for (i in 1:length(sample)) {
+    # Create corpus dataset
+    corpus[[i]] <- Corpus(VectorSource(sample[[i]]))
+    # Cleaning/stemming the data
+    corpus[[i]] <- tm_map(corpus[[i]], tolower)
+    corpus[[i]] <- tm_map(corpus[[i]], removeNumbers)
+    corpus[[i]] <- tm_map(corpus[[i]], removeWords, stopwords("english"))
+    corpus[[i]] <- tm_map(corpus[[i]], removePunctuation)
+    corpus[[i]] <- tm_map(corpus[[i]], stemDocument)
+    corpus[[i]] <- tm_map(corpus[[i]], stripWhitespace)
+    corpus[[i]] <- tm_map(corpus[[i]], PlainTextDocument)
+    # calculate document term frequency for corpus
+    dtMatrix[[i]] <- DocumentTermMatrix(corpus[[i]], control = list(wordLengths = c(0, 
+        Inf)))
+}
+
+rm(data)
+rm(sample)
+```
+
+##Plotting WordCloud data
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+set.seed(1000)  # Ensure reproducibility
+par(mfrow = c(1, 1))  # Establish Plotting Panel
+headings = c("Blogs Word Cloud Data", "News Word Cloud Data", "Twitter Word Cloud Data")
+
+# Iterate each corpus/DTM and plot word cloud for each
+for (i in 1:length(corpus)) {
+    wordcloud(words = colnames(dtMatrix[[i]]), freq = col_sums(dtMatrix[[i]]), 
+        scale = c(3, 1), max.words = 100, random.order = FALSE, rot.per = 0.35, 
+        use.r.layout = FALSE, colors = brewer.pal(8, "Dark2"))
+    title(headings[i])
+}
+```
